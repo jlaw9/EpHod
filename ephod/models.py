@@ -206,7 +206,8 @@ class ResidualLightAttention(nn.Module):
     '''Model consisting of light attention followed by residual dense layers'''
     
     def __init__(self, dim=1280, kernel_size=9, dropout=0.5,
-                 activation='relu', res_blocks=4, random_seed=0):
+                 activation='relu', res_blocks=4, random_seed=0, 
+                 out_dim=1):
 
         super(ResidualLightAttention, self).__init__()
         torch.manual_seed(random_seed)
@@ -218,7 +219,7 @@ class ResidualLightAttention(nn.Module):
             self.residual_dense.append(
                 ResidualDense(2 * dim, dropout, activation, random_seed)
                 )
-        self.output = nn.Linear(2 * dim, 1)
+        self.output = nn.Linear(2 * dim, out_dim)
         
         
     def forward(self, x, mask=None):
@@ -228,7 +229,7 @@ class ResidualLightAttention(nn.Module):
         x = self.dropout(x)
         for layer in self.residual_dense:
             x = layer(x)
-        y = self.output(x).flatten()
+        y = self.output(x)
         
         return [y, x, weights]
 
