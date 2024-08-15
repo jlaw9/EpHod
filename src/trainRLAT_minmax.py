@@ -23,6 +23,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DataParallel, DistributedDataParallel
 import torch.multiprocessing as mp
 
+from sklearn.preprocessing import OneHotEncoder
 
 import os
 import subprocess
@@ -61,6 +62,12 @@ def create_parser():
     parser.add_argument('--embedding_dir', type=str,
                         help='Path to directory containing per-residue embeddings of'\
                              ' sequences')
+    parser.add_argument('--y_cols', type=str,
+                        help='Comma-separated list of columns to use as prediction'\
+                             ' targets')
+    parser.add_argument('--feat_cols', type=str,
+                        help='Comma-separated list of columns to use as additional'\
+                             ' sequence-level features e.g., enzyme class')
     parser.add_argument('--local_storage', type=str,
                         help='Local path where embeddings will be copied to speeed-up '\
                              ' reading files')
@@ -98,6 +105,10 @@ def create_parser():
     parser.add_argument('--verbose', default=1, type=int,
                         help='Whether to print out details of training (1) or not (0)')
     args = parser.parse_args()
+    if args.y_cols is not None:
+        args.y_cols = [s.strip() for s in args.y_cols.split(",") if s is not ""]
+    if args.feat_cols is not None:
+        args.feat_cols = [s.strip() for s in args.feat_cols.split(",") if s is not ""]
     args.params = utils.read_json(args.paramsjson)  # Model parameters as dict
 
     return args
@@ -143,24 +154,33 @@ def configure_processes(rank, args):
 
 
 
+def get_one_hot_encoder(df, feat_cols):
+    enc = OneHotEncoder()#drop=[np.nan] * len(categ_cols))
+    enc.fit(df[feat_cols])
+    return enc
 
 
     
     
-def get_dataset(seqs, sample_method, args, y_cols=None):
+def get_dataset(seqs, 
+                sample_method, 
+                args,
+                y_cols=None, 
+                feat_cols=None, 
+                **kwargs):
     '''Get dataset of ESM embeddings data'''
 
     if y_cols is None:
         y_cols = ["ph_min_growth", "ph_max_growth", "ph_opt"]
     accessions = pd.read_csv(seqs, index_col=0).index # Seq. accession codes
     accessions = list(accessions)
-    target_data = pd.read_csv(args.target_data, index_col=0)
+    target_data = pd.read_csv(kwargs["target_data"], index_col=0)
     #print(accessions[:2])
     print(target_data.head(2))
     print(f"{len(accessions) = }, {len(target_data) = }")
     for col in y_cols:
         if col not in target_data.columns:
-            print(f"ERROR: col '{col}' not in target_data.cols: {target_data.columns}")
+            sys.stderr.write(f"ERROR: y_col '{col}' not in target_data.cols: {target_data.columns}")
             target_data[col]
     #accessions_with_file = []
     #for a in accessions:
@@ -168,18 +188,38 @@ def get_dataset(seqs, sample_method, args, y_cols=None):
     #        accessions_with_file += [a]
 #
 #    print(f"{len(accessions_with_file) = }")
-    
+    seq_features = None
+    args.num_seq_features = 0
+    if feat_cols is not None:
+        # First check that 
+        for col in feat_cols:
+            if col not in target_data.columns:
+                sys.stderr.write(f"ERROR: feat_col '{col}' not in target_data.cols: {target_data.columns}")
+                target_data[col]
+        # embed the features using a one-hot encoding
+        enc = get_one_hot_encoder(target_data, feat_cols)
+        feat_data = target_data[accessions,feat_cols]
+        seq_features = enc.transform(feat_data).toarray()
+        # See which one is right
+        args.num_seq_features = len(seq_features) 
+        print(f"{len(seq_features) = }")
+        args.num_seq_features = len(enc.categories_) 
+        print(f"{len(seq_features) = }")
+        args.num_seq_features = len([c for cat in enc.categories_ for c in cat]) 
+        print(f"{len(seq_features) = }")
+
     dataset = dataproc.EmbeddingData(
         accessions=accessions, 
         y=target_data.loc[accessions,y_cols].values,
+        seq_features=seq_features,
         weights=target_data.loc[accessions, sample_method].values, 
-        embedding_dir=args.embedding_dir, 
+        embedding_dir=kwargs["embedding_dir"], 
         use_mask=True, 
-        maxlen=args.maxlen,
-        tmp_dir=args.local_storage
+        maxlen=kwargs["maxlen"],
+        tmp_dir=kwargs["local_storage"]
         )
     
-    return dataset
+    return dataset, args
 
 
 
@@ -224,7 +264,9 @@ def build_model(args):
         ['dim', 'dim', 'kernel_size', 'dropout', 'activation', 'res_blocks', 
          'random_seed']
         }
-    args.model_params["out_dim"] = 3 
+    args.model_params["out_dim"] = len(args.y_cols) 
+    # once-hot encoding of the feature cols
+    args.model_params["dim2"] = args.num_seq_features
     torch.manual_seed(args.model_params['random_seed'])  # Reproducibility
     model = torchmodels.ResidualLightAttention(**args.model_params)
     args.num_parameters = torchmodels.count_parameters(model)['FULL_MODEL']
@@ -452,12 +494,12 @@ def train_for_one_epoch(rank, trainloader, model, optimizer, epoch, args):
     # temp fix
     device = "cuda:0"
     
-    for i, (x, y, weight, mask) in enumerate(tqdm(trainloader)):
+    for i, (x, x2, y, weight, mask) in enumerate(tqdm(trainloader)):
 
-        x, y, weight, mask = x.to(device), y.to(device), weight.to(device), mask.to(device)
+        x, x2, y, weight, mask = x.to(device), x2.to(device), y.to(device), weight.to(device), mask.to(device)
 
         optimizer.zero_grad()                          
-        y_pred = model(x, mask=mask)[0]
+        y_pred = model(x, x2=x2, mask=mask)[0]
         losses = []
         combined_loss = 0
         for i in range(3):
@@ -495,10 +537,10 @@ def validate(rank, valloader, model, args):
 
     with torch.no_grad():
         
-        for i, (x, y, weight, mask) in enumerate(valloader):
+        for i, (x, x2, y, weight, mask) in enumerate(valloader):
             
-            x, y, weight, mask = x.to(device), y.to(device), weight.to(device), mask.to(device)
-            y_pred = model(x, mask=mask)[0]
+            x, x2, y, weight, mask = x.to(device), x2.to(device), y.to(device), weight.to(device), mask.to(device)
+            y_pred = model(x, x2=x2, mask=mask)[0]
 
             losses = []
             combined_loss = 0
@@ -528,17 +570,19 @@ def distributed_training(rank, world_size, args):
     
     
     # Prepare dataloader
-    traindata = get_dataset(args.trainseqs, 
-                            args.params['sample_method'], 
-                            args)
+    traindata, args = get_dataset(args.trainseqs, 
+                                  args.params['sample_method'], 
+                                  args,
+                                  **args)
     trainloader = get_dataloader(rank, 
                                  world_size,
                                  traindata,
                                  True,
                                  args)
-    valdata = get_dataset(args.valseqs, 
-                          'bin_inverse', # Use bin_inv to reweight validataion data
-                          args)
+    valdata, args = get_dataset(args.valseqs, 
+                                'bin_inverse', # Use bin_inv to reweight validataion data
+                                args,
+                                **args)
     valloader = get_dataloader(rank,
                                world_size,
                                valdata, 

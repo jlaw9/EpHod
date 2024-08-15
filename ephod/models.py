@@ -205,7 +205,7 @@ class LightAttention(nn.Module):
 class ResidualLightAttention(nn.Module):
     '''Model consisting of light attention followed by residual dense layers'''
     
-    def __init__(self, dim=1280, kernel_size=9, dropout=0.5,
+    def __init__(self, dim=1280, dim2=0, kernel_size=9, dropout=0.5,
                  activation='relu', res_blocks=4, random_seed=0, 
                  out_dim=1):
 
@@ -215,18 +215,25 @@ class ResidualLightAttention(nn.Module):
         self.batchnorm = nn.BatchNorm1d(2 * dim)                
         self.dropout = nn.Dropout(dropout)        
         self.residual_dense = nn.ModuleList()        
+        self.dim2 = (2 * dim) + dim2
         for i in range(res_blocks):
             self.residual_dense.append(
-                ResidualDense(2 * dim, dropout, activation, random_seed)
+                ResidualDense(self.dim2, dropout, activation, random_seed)
                 )
-        self.output = nn.Linear(2 * dim, out_dim)
+        self.output = nn.Linear(self.dim2, out_dim)
         
         
-    def forward(self, x, mask=None):
+    def forward(self, x, x2, mask=None):
+        """ 
+        *x*: sequence embedding
+        *x2*: additional sequence features
+        *mask*: positions on sequence to ignore (i.e., if sequence length is < max len)
+        """
 
         x, weights = self.light_attention(x, mask)
         x = self.batchnorm(x)
         x = self.dropout(x)
+        x = torch.cat([x, x2], dim=1)
         for layer in self.residual_dense:
             x = layer(x)
         y = self.output(x)

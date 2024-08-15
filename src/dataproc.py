@@ -117,6 +117,7 @@ class EmbeddingData(Dataset):
     def __init__(self, 
                  accessions, 
                  y, 
+                 seq_features=None,
                  weights=None, 
                  embedding_dir='./', 
                  tmp_dir=None, 
@@ -139,6 +140,7 @@ class EmbeddingData(Dataset):
             self.weights = torch.tensor(weights, dtype=dtype) 
         self.embedding_dir = embedding_dir #Directory conataining ESM-1b embeddings
         self.maxlen = maxlen #Length to which embeddings should be padded
+        self.seq_features = seq_features #Additional features to include with sequence embeddings
         self.use_mask = use_mask #If True, return an array of ones and zeros indicating padding positions
         # A bottleneck appears to be file I/O in reading the embeddings from file
         # Give the path to the local scratch to which files will be copied
@@ -181,7 +183,17 @@ class EmbeddingData(Dataset):
             mask = ([1] * self.maxlen) # Ones at all positions, no masking
         mask = torch.tensor(mask, dtype=torch.int32) # Shape is [maxlen]
         
-        return (X, self.y[index], self.weights[index], mask)
+        if self.seq_features is not None:
+            return (X, 
+                    self.seq_features[index], 
+                    self.y[index], 
+                    self.weights[index], 
+                    mask)
+        else:
+            return (X, 
+                    self.y[index], 
+                    self.weights[index], 
+                    mask)
 
 
 
