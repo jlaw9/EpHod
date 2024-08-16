@@ -207,7 +207,7 @@ class ResidualLightAttention(nn.Module):
     
     def __init__(self, dim=1280, kernel_size=9, dropout=0.5,
                  activation='relu', res_blocks=4, random_seed=0, 
-                 out_dim=1):
+                 out_dim=1, **kwargs):
 
         super(ResidualLightAttention, self).__init__()
         torch.manual_seed(random_seed)
@@ -242,35 +242,39 @@ class ResidualLightAttention(nn.Module):
 
 class EpHodModel():
     
-    def __init__(self):
+    def __init__(self, model_path=None, params_path=None):
 
+        self.model_path = model_path
+        self.params_path = params_path
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         if self.device != 'cuda':
             print('WARNING: You are not using a GPU which will be slow.')
-        self.esm1v_model, self.esm1v_batch_converter = self.load_ESM1v_model()
+        #self.esm1v_model, self.esm1v_batch_converter = self.load_ESM1v_model()
+        torch.hub.set_dir('/scratch/jlaw/torch')
+        self.esm2_model, self.esm2_batch_converter = self.load_ESM2_model()
         self.rlat_model = self.load_RLAT_model()
-        _ = self.esm1v_model.eval()
+        _ = self.esm2_model.eval()
         _ = self.rlat_model.eval()
         
     
-    def load_ESM1v_model(self):
-        '''Return pretrained ESM1v model weights and batch converter'''
+    def load_ESM2_model(self):
+        '''Return pretrained ESM2 model weights and batch converter'''
         
-        model, alphabet = esm.pretrained.esm1v_t33_650M_UR90S_1()
+        model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
         model = model.to(self.device)
         batch_converter = alphabet.get_batch_converter()
         
         return model, batch_converter
     
     
-    def get_ESM1v_embeddings(self, accs, seqs):
-        '''Return per-residue embeddings (padded) for protein sequences from ESM1v model'''
+    def get_ESM2_embeddings(self, accs, seqs):
+        '''Return per-residue embeddings (padded) for protein sequences from ESM2 model'''
 
         seqs = [utils.replace_noncanonical(seq, 'X') for seq in seqs]
         data = [(accs[i], seqs[i]) for i in range(len(accs))]
-        batch_labels, batch_strs, batch_tokens = self.esm1v_batch_converter(data)
+        batch_labels, batch_strs, batch_tokens = self.esm2_batch_converter(data)
         batch_tokens = batch_tokens.to(device=self.device, non_blocking=True)
-        emb = self.esm1v_model(batch_tokens, repr_layers=[33], return_contacts=False)
+        emb = self.esm2_model(batch_tokens, repr_layers=[33], return_contacts=False)
         emb = emb["representations"][33]
         emb = emb.transpose(2,1) # From (batch, seqlen, features) to (batch, features, seqlen)
         emb = emb.to(self.device)
@@ -282,9 +286,13 @@ class EpHodModel():
         '''Return fine-tuned residual light attention top model'''
 
         # Path to RLAT model
-        this_dir, this_filename = os.path.split(__file__)
-        params_path = os.path.join(this_dir, 'saved_models', 'RLAT', 'params.json')
-        rlat_path = os.path.join(this_dir, 'saved_models', 'RLAT', 'RLAT.pt')
+        if self.model_path is None:
+            this_dir, this_filename = os.path.split(__file__)
+            params_path = os.path.join(this_dir, 'saved_models', 'RLAT', 'params.json')
+            rlat_path = os.path.join(this_dir, 'saved_models', 'RLAT', 'RLAT.pt')
+        else:
+            params_path = self.params_path
+            rlat_path = self.model_path
         
         # Download RLAT model from google drive if not in path
         if not os.path.exists(rlat_path):
@@ -293,8 +301,9 @@ class EpHodModel():
         # Load RLAT model from path
         checkpoint = torch.load(rlat_path, map_location=self.device)
         params = utils.read_json(params_path)        
+        params["out_dim"] = 3
         model = ResidualLightAttention(**params)
-        model = DataParallel(model)
+        #model = DataParallel(model)
         model.load_state_dict(checkpoint['model_state_dict'], strict=True)
         model = model.to(self.device)
 
@@ -304,7 +313,7 @@ class EpHodModel():
     def batch_predict(self, accs, seqs):
         '''Predict pHopt with EpHod on a batch of sequences'''
         
-        emb_esm1v = self.get_ESM1v_embeddings(accs, seqs)
+        emb_esm1v = self.get_ESM2_embeddings(accs, seqs)
         maxlen = emb_esm1v.shape[-1]
         masks = [[1] * len(seqs[i]) + [0] * (maxlen - len(seqs[i])) \
                  for i in range(len(seqs))]
