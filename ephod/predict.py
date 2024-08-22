@@ -216,7 +216,8 @@ def main():
         
         
     # Save predictions
-    all_ypred = pd.DataFrame(all_ypred, index=accessions, columns=['pHopt'])
+    #all_ypred = pd.DataFrame(all_ypred, index=accessions, columns=['pHopt'])
+    all_ypred = pd.DataFrame(all_ypred, index=accessions)
     all_ypred.to_csv(phout_file)
     
     
