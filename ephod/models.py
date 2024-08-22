@@ -215,6 +215,7 @@ class ResidualLightAttention(nn.Module):
         self.batchnorm = nn.BatchNorm1d(2 * dim)                
         self.dropout = nn.Dropout(dropout)        
         self.residual_dense = nn.ModuleList()        
+        # add extra sequence features onto the embeddings
         self.dim2 = (2 * dim) + dim2
         for i in range(res_blocks):
             self.residual_dense.append(
@@ -223,7 +224,7 @@ class ResidualLightAttention(nn.Module):
         self.output = nn.Linear(self.dim2, out_dim)
         
         
-    def forward(self, x, x2, mask=None):
+    def forward(self, x, x2=None, mask=None):
         """ 
         *x*: sequence embedding
         *x2*: additional sequence features
@@ -233,7 +234,8 @@ class ResidualLightAttention(nn.Module):
         x, weights = self.light_attention(x, mask)
         x = self.batchnorm(x)
         x = self.dropout(x)
-        x = torch.cat([x, x2], dim=1)
+        if x2 is not None:
+            x = torch.cat([x, x2], dim=1)
         for layer in self.residual_dense:
             x = layer(x)
         y = self.output(x)

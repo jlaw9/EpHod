@@ -156,11 +156,13 @@ class EmbeddingData(Dataset):
     def __getitem__(self, index):
         
         # Get embedding from disk, shape is [1280, seqlen]
-        full_file_path = f"{self.embedding_dir}/{self.accessions[index].split('_')[0]}.pt"
+        #full_file_path = f"{self.embedding_dir}/{self.accessions[index].split('_')[0]}.pt"
+        full_file_path = f"{self.embedding_dir}/{self.accessions[index]}.pt"
         if self.tmp_dir is None:
             X = torch.load(full_file_path) 
         else:
-            tmp_file_path = f"{self.tmp_dir}/{self.accessions[index].split('_')[0]}.pt"
+            #tmp_file_path = f"{self.tmp_dir}/{self.accessions[index].split('_')[0]}.pt"
+            tmp_file_path = f"{self.tmp_dir}/{self.accessions[index]}.pt"
             if os.path.isfile(tmp_file_path):
                 X = torch.load(tmp_file_path) 
             else:
